@@ -26,7 +26,7 @@ app.use(
 	})
 );
 
-app.post('api/get_hex', async (req, res) => {
+app.post('/api/get_hex', async (req, res) => {
 	const date = req.body.date;
 
 	const hex = await Hex.findOne({
