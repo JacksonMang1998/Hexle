@@ -5,19 +5,29 @@ const bodyParser = require('body-parser');
 const db = require('./models');
 const { Hex } = db;
 
-const add = require('date-fns/add');
-const format = require('date-fns/format');
-const parse = require('date-fns/parse');
+const { add, format, parse } = require('date-fns');
 const schedule = require('node-schedule');
 
 const app = express();
 
-// Sync database tables
-db.sequelize.authenticate().then(() => {
-  console.log("DB connected");
-  db.sequelize.sync();
-});
+// =====================
+// DB INIT (SAFE FOR RENDER)
+// =====================
+const initDB = async () => {
+	try {
+		await db.sequelize.authenticate();
+		console.log("DB connected");
 
+		await db.sequelize.sync();
+		console.log("DB synced");
+
+		// ensure today's hex always exists
+		await ensureHexForDate(format(new Date(), "yyyy-MM-dd"));
+
+	} catch (err) {
+		console.error("DB init error:", err);
+	}
+};
 
 // =====================
 // MIDDLEWARE
@@ -28,107 +38,78 @@ app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
 // =====================
-// HEALTH CHECK (important for Render)
+// HEALTH CHECK
 // =====================
 app.get('/', (req, res) => {
-  res.json({ status: 'ok' });
-});
-
-// =====================
-// GET HEX ROUTE (FIXED PATH)
-// =====================
-app.post('/api/get_hex', async (req, res) => {
-  try {
-    const date = req.body.date;
-
-    if (!date) {
-      return res.status(400).json({ error: 'date is required' });
-    }
-
-    const hex = await Hex.findOne({
-      where: { date }
-    });
-
-    return res.json(hex);
-  } catch (err) {
-    console.error('Error in /api/get_hex:', err);
-    return res.status(500).json({ error: 'server error' });
-  }
+	res.json({ status: 'ok' });
 });
 
 // =====================
 // HEX GENERATOR
 // =====================
 const generateHex = () => {
-  let initial = Math.floor(Math.random() * 16777215)
-    .toString(16)
-    .toLowerCase();
+	let initial = Math.floor(Math.random() * 16777215)
+		.toString(16)
+		.toLowerCase();
 
-  while (initial.length < 6) {
-    initial = '0' + initial;
-  }
+	while (initial.length < 6) {
+		initial = '0' + initial;
+	}
 
-  return initial;
+	return initial;
 };
 
 // =====================
-// CREATE HEX ENTRY
+// ENSURE HEX EXISTS (CRITICAL FIX)
 // =====================
-const createHexes = async () => {
-  try {
-    const latestDate = await Hex.findAll({
-      limit: 1,
-      order: [['id', 'DESC']]
-    });
+const ensureHexForDate = async (date) => {
+	let hex = await Hex.findOne({ where: { date } });
 
-    const idx = 0;
+	if (!hex) {
+		hex = await Hex.create({
+			date,
+			hex: generateHex()
+		});
 
-    if (latestDate[0]) {
-      const nextDate = format(
-        add(
-          new Date(parse(latestDate[0].date, 'yyyy-MM-dd', new Date())),
-          { days: idx + 1 }
-        ),
-        'yyyy-MM-dd'
-      );
+		console.log("Created missing hex for:", date);
+	}
 
-      await Hex.create({
-        hex: generateHex(),
-        date: nextDate
-      });
-    } else {
-      await Hex.create({
-        hex: generateHex(),
-        date: format(add(new Date(), { days: idx }), 'yyyy-MM-dd')
-      });
-    }
-  } catch (err) {
-    console.error('Error in createHexes:', err);
-  }
+	return hex;
 };
 
 // =====================
-// PRUNE OLD HEXES
+// GET HEX ROUTE (FIXED)
 // =====================
-const pruneHexes = async () => {
-  try {
-    const oldestDate = await Hex.findAll({
-      limit: 1,
-      order: [['id', 'ASC']]
-    });
+app.post('/api/get_hex', async (req, res) => {
+	try {
+		const date = req.body.date;
 
-    if (oldestDate[0]) {
-      await Hex.destroy({
-        where: { id: oldestDate[0].id }
-      });
-    }
-  } catch (err) {
-    console.error('Error in pruneHexes:', err);
-  }
+		if (!date) {
+			return res.status(400).json({ error: 'date is required' });
+		}
+
+		const hex = await ensureHexForDate(date);
+
+		return res.json(hex);
+
+	} catch (err) {
+		console.error('Error in /api/get_hex:', err);
+		return res.status(500).json({ error: 'server error' });
+	}
+});
+
+// =====================
+// DAILY MAINTENANCE (OPTIONAL)
+// =====================
+const createNextDayHex = async () => {
+	const today = new Date();
+	const nextDay = format(add(today, { days: 1 }), "yyyy-MM-dd");
+
+	await ensureHexForDate(nextDay);
 };
 
 // =====================
-// SCHEDULE JOB (SAFE VERSION)
+// SCHEDULE JOB (SAFE)
 // =====================
 const rule = new schedule.RecurrenceRule();
 rule.hour = 0;
@@ -136,19 +117,20 @@ rule.minute = 0;
 rule.tz = 'Etc/UTC';
 
 schedule.scheduleJob(rule, async () => {
-  try {
-    await pruneHexes();
-    await createHexes();
-  } catch (err) {
-    console.error('Scheduled job error:', err);
-  }
+	try {
+		await createNextDayHex();
+		console.log("Daily hex generated");
+	} catch (err) {
+		console.error('Scheduled job error:', err);
+	}
 });
 
 // =====================
-// START SERVER (Render SAFE)
+// START SERVER
 // =====================
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+app.listen(PORT, async () => {
+	await initDB();
+	console.log(`Server running on port ${PORT}`);
 });
