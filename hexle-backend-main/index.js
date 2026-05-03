@@ -1,7 +1,9 @@
 const express = require('express');
 const cors = require('cors');
 const bodyParser = require('body-parser');
-const { Hex } = require('./models');
+
+const db = require('./models');
+const { Hex } = db;
 
 const add = require('date-fns/add');
 const format = require('date-fns/format');
@@ -9,6 +11,13 @@ const parse = require('date-fns/parse');
 const schedule = require('node-schedule');
 
 const app = express();
+
+// Sync database tables
+db.sequelize.authenticate().then(() => {
+  console.log("DB connected");
+  db.sequelize.sync();
+});
+
 
 // =====================
 // MIDDLEWARE
